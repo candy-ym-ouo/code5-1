@@ -1,0 +1,32 @@
+{
+  "name": "shanhai-flora",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c green,cyan \"pnpm --filter @shanhai/server dev\" \"pnpm --filter @shanhai/web dev\"",
+    "build": "pnpm --filter @shanhai/contracts build && pnpm --filter @shanhai/game-core build && pnpm --filter @shanhai/web build && pnpm --filter @shanhai/server build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:e2e": "pnpm build && node tests/closed-loop.test.mjs",
+    "db:init": "pnpm --filter @shanhai/server db:init",
+    "start": "pnpm --filter @shanhai/server start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "pnpm@10.15.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@shanhai/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --platform node --sourcemap --clean --out-dir dist --external node:sqlite && node scripts/fix-node-sqlite.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "db:init": "tsx src/scripts/init-db.ts",
+    "start": "node --disable-warning=ExperimentalWarning dist/index.js"
+  },
+  "dependencies": {
+    "@shanhai/contracts": "file:../../packages/contracts",
+    "@shanhai/game-core": "file:../../packages/game-core",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "pino": "^9.7.0",
+    "pino-http": "^10.5.0"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.9",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.3.0",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.1.4",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
