@@ -16,9 +16,19 @@ export class Store {
   }
 
   private migrate(): void {
-    const columns = this.db.prepare('PRAGMA table_info(samples)').all() as unknown as Array<{ name: string }>;
-    if (!columns.some((column) => column.name === 'slot')) {
+    const sampleColumns = this.db.prepare('PRAGMA table_info(samples)').all() as unknown as Array<{ name: string }>;
+    if (!sampleColumns.some((column) => column.name === 'slot')) {
       this.db.exec('ALTER TABLE samples ADD COLUMN slot INTEGER NOT NULL DEFAULT 1');
+    }
+
+    // 旧档迁移：新增移动/等待/跨区探索共用的当日恢复预算列。
+    // 默认值取 0，读取旧档时按存档所处季节懒初始化，保证“旧档进度”不被重置。
+    const saveColumns = this.db.prepare('PRAGMA table_info(saves)').all() as unknown as Array<{ name: string }>;
+    if (!saveColumns.some((column) => column.name === 'travel_points')) {
+      this.db.exec('ALTER TABLE saves ADD COLUMN travel_points INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!saveColumns.some((column) => column.name === 'travel_limit')) {
+      this.db.exec('ALTER TABLE saves ADD COLUMN travel_limit INTEGER NOT NULL DEFAULT 0');
     }
   }
 

@@ -49,6 +49,7 @@ const EnvironmentValuesSchema = z.object({
 
 export const CommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('MOVE_ZONE'), siteId: z.enum(SITE_IDS) }),
+  z.object({ type: z.literal('EXPLORE_ZONE'), siteId: z.enum(SITE_IDS) }),
   z.object({ type: z.literal('WAIT') }),
   z.object({ type: z.literal('OBSERVE_PLANT'), speciesId: z.string().min(1), values: ObservationValuesSchema }),
   z.object({ type: z.literal('RECORD_ENVIRONMENT'), values: EnvironmentValuesSchema }),
@@ -190,6 +191,8 @@ export interface WorldSnapshot {
   day: number;
   slot: number;
   actionPoints: number;
+  travelPoints: number;
+  travelLimit: number;
   phase: GamePhase;
   currentSiteId: SiteId;
   restorationUnlocked: boolean;
@@ -232,3 +235,61 @@ export const SEASON_LABELS: Record<Season, string> = {
 };
 
 export const SLOT_LABELS = ['晨', '午', '暮'];
+
+export const SLOTS_PER_DAY = 3;
+export const DAYS_PER_SEASON = 10;
+export const SEASON_ACTION_POINTS = SLOTS_PER_DAY * DAYS_PER_SEASON;
+
+// 移动、等待与跨区探索共用的“当日恢复预算”上限随季节缩短而收紧：
+// 冬季白昼短、雪阻路，预算最低；春秋居中；夏季白昼最长。
+export const SEASON_TRAVEL_LIMIT: Record<Season, number> = {
+  spring: 4,
+  summer: 5,
+  autumn: 4,
+  winter: 3
+};
+
+export function travelLimitFor(season: Season): number {
+  return SEASON_TRAVEL_LIMIT[season];
+}
+
+// 区域步道相邻关系（无向）：相邻区移动便宜，非相邻区属于跨区探索。
+export const SITE_ADJACENCY: Record<SiteId, SiteId[]> = {
+  foothill: ['mixed_forest', 'ridge'],
+  mixed_forest: ['foothill', 'stream_valley', 'ridge'],
+  stream_valley: ['mixed_forest', 'ridge'],
+  ridge: ['foothill', 'mixed_forest', 'stream_valley']
+};
+
+export function sitesAdjacent(from: SiteId, to: SiteId): boolean {
+  return from !== to && SITE_ADJACENCY[from]?.includes(to);
+}
+
+export type TravelActivity = 'move' | 'explore';
+
+// 季节时限联动：相邻移动固定 1 点体力；非相邻移动与跨区侦察在冬季白昼
+// 缩短时额外吃力。预算不足的操作必须整体失败，不允许只扣一半。
+export function travelCost(activity: TravelActivity, from: SiteId, to: SiteId, season: Season): number {
+  const adjacent = sitesAdjacent(from, to);
+  if (activity === 'move') {
+    if (adjacent) return 1;
+    return season === 'winter' ? 3 : 2;
+  }
+  if (adjacent) return season === 'winter' ? 2 : 1;
+  return season === 'winter' ? 4 : 3;
+}
+
+export interface ReconSummary {
+  siteId: SiteId;
+  siteName: string;
+  adjacent: boolean;
+  weather: string;
+  weatherLabel: string;
+  temperatureC: number;
+  humidity: number;
+  windSpeed: number;
+  disturbance: number;
+  visibleSpeciesCount: number;
+  vulnerableCount: number;
+  cost: number;
+}

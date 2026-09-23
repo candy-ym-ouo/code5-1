@@ -63,6 +63,14 @@ try {
   });
   await send({ type: 'TAKE_SAMPLE', speciesId: 'prunus-davidiana', method: 'litter' });
 
+  // 跨区侦察：不改变当前区域，与移动/等待共用当日移动体力预算。
+  const siteBeforeRecon = world.currentSiteId;
+  assert.equal(world.travelPoints > 0 && world.travelPoints <= world.travelLimit, true);
+  await send({ type: 'EXPLORE_ZONE', siteId: 'stream_valley' });
+  assert.equal(world.currentSiteId, siteBeforeRecon);
+  assert.equal(world.recentEvents[0].type, 'EXPLORE_ZONE');
+  assert.ok(world.travelPoints >= 0);
+
   for (const expectedSeason of ['spring', 'summer', 'autumn', 'winter']) {
     assert.equal(world.season, expectedSeason);
     while (world.day < 8) {

@@ -186,10 +186,15 @@ code { font-family: "SFMono-Regular", Consolas, monospace; }
 }
 .map-contours { position: absolute; inset: -25% -10%; border: 1px solid rgba(51, 89, 65, .12); border-radius: 48% 52% 44% 56%; transform: rotate(-13deg); box-shadow: 0 0 0 32px rgba(51, 89, 65, .025), 0 0 0 75px rgba(51, 89, 65, .022), 0 0 0 120px rgba(51, 89, 65, .018); }
 .map-path { position: absolute; left: 18%; top: 68%; width: 65%; height: 1px; background: repeating-linear-gradient(90deg, rgba(48, 73, 56, .55) 0 7px, transparent 7px 13px); transform: rotate(-29deg); transform-origin: left; }
-.map-stop {
+.map-stop-wrap {
   position: absolute;
   z-index: 2;
   transform: translate(-50%, -50%);
+  display: grid;
+  justify-items: stretch;
+  gap: .25rem;
+}
+.map-stop {
   display: grid;
   min-width: 112px;
   padding: .65rem .8rem;
@@ -203,6 +208,17 @@ code { font-family: "SFMono-Regular", Consolas, monospace; }
 .map-stop::before { content: ""; position: absolute; left: -5px; top: 50%; width: 10px; height: 10px; border-radius: 50%; background: var(--season-accent); transform: translateY(-50%); }
 .map-stop.active { color: white; background: var(--moss-deep); border-color: var(--moss-deep); }
 .map-stop small { margin-top: .2rem; color: inherit; opacity: .7; }
+.recon-button {
+  font-size: .68rem;
+  padding: .2rem .45rem;
+  border: 1px dashed rgba(31, 67, 47, .35);
+  border-radius: 4px;
+  background: rgba(250, 248, 238, .92);
+  color: var(--moss-deep);
+  cursor: pointer;
+}
+.recon-button:hover:not(:disabled) { background: var(--moss-deep); color: #fff; border-style: solid; }
+.recon-button:disabled { opacity: .45; cursor: not-allowed; }
 .weather-card { padding: 1.35rem; border-radius: 4px; background: var(--moss-deep); color: #fff; box-shadow: var(--shadow); }
 .weather-symbol { float: right; display: grid; place-items: center; width: 58px; height: 58px; border-radius: 50%; color: var(--moss-deep); background: #f4e8bf; font-size: 1.6rem; }
 .weather-card .eyebrow { color: #afd1b8; }

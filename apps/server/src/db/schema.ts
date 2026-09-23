@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS saves (
   day INTEGER NOT NULL,
   slot INTEGER NOT NULL,
   action_points INTEGER NOT NULL,
+  travel_points INTEGER NOT NULL DEFAULT 0,
+  travel_limit INTEGER NOT NULL DEFAULT 0,
   phase TEXT NOT NULL,
   current_site_id TEXT NOT NULL,
   year_start_species_json TEXT NOT NULL,

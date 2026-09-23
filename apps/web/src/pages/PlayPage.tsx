@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   SEASON_LABELS,
   SLOT_LABELS,
+  travelCost,
   type GameCommand,
   type SampleMethod,
   type SpeciesSnapshot
@@ -71,6 +72,9 @@ export function PlayPage() {
           <div className="time-chip">
             <span>{SLOT_LABELS[world.slot - 1] ?? '暮'}</span>
             <strong>{world.actionPoints} AP</strong>
+            <strong title="当日移动体力：移动、等待与跨区侦察共用，次日恢复">
+              体力 {world.travelPoints}/{world.travelLimit}
+            </strong>
           </div>
         </div>
 
@@ -86,21 +90,41 @@ export function PlayPage() {
             <div className="map-and-weather">
               <div className="mountain-map">
                 <div className="map-contours" aria-hidden="true" />
-                {world.sites.map((site) => (
-                  <button
-                    key={site.id}
-                    type="button"
-                    className={`map-stop ${site.current ? 'active' : ''}`}
-                    style={{ left: `${site.mapX}%`, top: `${site.mapY}%` }}
-                    onClick={() => {
-                      if (!site.current) void run({ type: 'MOVE_ZONE', siteId: site.id });
-                    }}
-                    disabled={pending}
-                  >
-                    <span>{site.name}</span>
-                    <small>{site.species.length} 个对象</small>
-                  </button>
-                ))}
+                {world.sites.map((site) => {
+                  const moveCost = site.current ? 0 : travelCost('move', currentSite.id, site.id, world.season);
+                  const reconCost = site.current ? 0 : travelCost('explore', currentSite.id, site.id, world.season);
+                  return (
+                    <div
+                      key={site.id}
+                      className={`map-stop-wrap ${site.current ? 'active' : ''}`}
+                      style={{ left: `${site.mapX}%`, top: `${site.mapY}%` }}
+                    >
+                      <button
+                        type="button"
+                        className={`map-stop ${site.current ? 'active' : ''}`}
+                        title={site.current ? '当前区域' : `移动：${moveCost} 体力`}
+                        onClick={() => {
+                          if (!site.current) void run({ type: 'MOVE_ZONE', siteId: site.id });
+                        }}
+                        disabled={pending || site.current || world.travelPoints < moveCost || world.actionPoints < 1}
+                      >
+                        <span>{site.name}</span>
+                        <small>{site.species.length} 个对象{site.current ? ' · 当前位置' : ` · 移动 ${moveCost} 体力`}</small>
+                      </button>
+                      {!site.current && (
+                        <button
+                          type="button"
+                          className="recon-button"
+                          title={`跨区侦察（不前往）：${reconCost} 体力`}
+                          disabled={pending || world.travelPoints < reconCost || world.actionPoints < 1}
+                          onClick={() => void run({ type: 'EXPLORE_ZONE', siteId: site.id })}
+                        >
+                          侦察 {reconCost}体力
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
                 <div className="map-path" aria-hidden="true" />
               </div>
               <aside className="weather-card">

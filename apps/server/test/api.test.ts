@@ -45,6 +45,8 @@ describe('closed-loop API', () => {
     expect(world.year).toBe(1);
     expect(world.season).toBe('spring');
     expect(world.sites.length).toBe(4);
+    expect(world.travelPoints).toBe(4);
+    expect(world.travelLimit).toBe(4);
     const baseline = store.db
       .prepare('SELECT year_start_species_json FROM saves WHERE id = ?')
       .get(world.saveId) as unknown as { year_start_species_json: string };
@@ -91,6 +93,48 @@ describe('closed-loop API', () => {
     expect(second.body.event.id).toBe(first.body.event.id);
     world = first.body.world as WorldSnapshot;
 
+    // 跨区侦察不改变当前位置，但要从与移动共用的体力预算中扣费。
+    const recon = await command(agent, world, { type: 'EXPLORE_ZONE', siteId: 'stream_valley' });
+    expect(recon.currentSiteId).toBe(world.currentSiteId);
+    expect(recon.travelPoints).toBeLessThan(world.travelPoints);
+    expect(recon.recentEvents[0]?.type).toBe('EXPLORE_ZONE');
+    expect(recon.recentEvents[0]?.effects.some((effect: string) => effect.includes('跨区远途侦察'))).toBe(true);
+    world = recon;
+
+    // 失败命令整体回滚、不重扣：连续把体力花光后，下一次跨区侦察应被拒绝，
+    // revision/AP/体力均保持失败前的值，且可以用新幂等键重试成功。
+    while (world.travelPoints >= 3 && world.actionPoints > 0) {
+      world = await command(agent, world, { type: 'EXPLORE_ZONE', siteId: 'stream_valley' });
+    }
+    const blocked = await agent
+      .post(`/api/save/${world.saveId}/commands`)
+      .send({
+        expectedRevision: world.revision,
+        idempotencyKey: 'recon-blocked-no-charge',
+        command: { type: 'EXPLORE_ZONE', siteId: 'stream_valley' }
+      })
+      .expect(409);
+    expect(blocked.body.code).toBe('TRAVEL_BUDGET_EXHAUSTED');
+    const blockedRevision = world.revision;
+    const blockedPoints = world.travelPoints;
+    const blockedAp = world.actionPoints;
+    world = await agent.get(`/api/save/${world.saveId}/world`).expect(200).then((response) => response.body as WorldSnapshot);
+    // 失败请求没有产生 revision，也没有扣任何费用。
+    expect(world.revision).toBe(blockedRevision);
+    expect(world.travelPoints).toBe(blockedPoints);
+    expect(world.actionPoints).toBe(blockedAp);
+
+    // 等待恢复体力：等待本身不耗体力，跨日后预算补满。
+    const travelBeforeWait = world.travelPoints;
+    world = await command(agent, world, { type: 'WAIT' });
+    expect(world.travelPoints).toBeGreaterThanOrEqual(travelBeforeWait);
+    if (world.travelPoints < 3) {
+      world = await command(agent, world, { type: 'WAIT' });
+    }
+    const recovered = await command(agent, world, { type: 'EXPLORE_ZONE', siteId: 'stream_valley' });
+    expect(recovered.recentEvents[0]?.type).toBe('EXPLORE_ZONE');
+    world = recovered;
+
     for (const season of ['spring', 'summer', 'autumn', 'winter'] as Season[]) {
       expect(world.season).toBe(season);
       world = await advanceToDayEight(agent, world);
@@ -98,6 +142,10 @@ describe('closed-loop API', () => {
       if (season !== 'winter') {
         expect(world.phase).toBe('season_review');
         world = await command(agent, world, { type: 'BEGIN_NEXT_SEASON' });
+        expect(world.travelPoints).toBe(world.travelLimit);
+        if (world.season === 'winter') {
+          expect(world.travelLimit).toBe(3);
+        }
       }
     }
 
