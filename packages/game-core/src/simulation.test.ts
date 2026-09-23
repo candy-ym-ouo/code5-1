@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { areSitesAdjacent, exploreCost, moveCost } from '@shanhai/contracts';
 import { SPECIES, SPECIES_BY_ID } from './catalog.ts';
 import {
   applyOverwinter,
@@ -48,6 +49,28 @@ describe('deterministic world simulation', () => {
       expect(state.health).toBeGreaterThanOrEqual(0);
       expect(state.health).toBeLessThanOrEqual(100);
     }
+  });
+});
+
+describe('action cost model', () => {
+  it('uses shared adjacency and charges a winter ridge surcharge', () => {
+    expect(areSitesAdjacent('foothill', 'mixed_forest')).toBe(true);
+    expect(areSitesAdjacent('foothill', 'stream_valley')).toBe(false);
+    expect(areSitesAdjacent('ridge', 'ridge')).toBe(false);
+
+    // 相邻 1 点，跨区域 2 点
+    expect(moveCost('foothill', 'mixed_forest', 'spring')).toBe(1);
+    expect(moveCost('foothill', 'stream_valley', 'spring')).toBe(2);
+    // 冬季穿越山脊加收 1 点
+    expect(moveCost('foothill', 'ridge', 'spring')).toBe(1);
+    expect(moveCost('foothill', 'ridge', 'winter')).toBe(2);
+    expect(moveCost('ridge', 'stream_valley', 'winter')).toBe(2);
+    expect(moveCost('mixed_forest', 'stream_valley', 'winter')).toBe(1);
+    // 跨区探索在移动成本上加 1 点
+    expect(exploreCost('foothill', 'mixed_forest', 'spring')).toBe(2);
+    expect(exploreCost('foothill', 'stream_valley', 'spring')).toBe(3);
+    expect(exploreCost('foothill', 'ridge', 'winter')).toBe(3);
+    expect(exploreCost('foothill', 'foothill', 'spring')).toBe(0);
   });
 });
 

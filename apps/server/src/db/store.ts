@@ -16,9 +16,16 @@ export class Store {
   }
 
   private migrate(): void {
-    const columns = this.db.prepare('PRAGMA table_info(samples)').all() as unknown as Array<{ name: string }>;
-    if (!columns.some((column) => column.name === 'slot')) {
+    const samplesColumns = this.db.prepare('PRAGMA table_info(samples)').all() as unknown as Array<{ name: string }>;
+    if (!samplesColumns.some((column) => column.name === 'slot')) {
       this.db.exec('ALTER TABLE samples ADD COLUMN slot INTEGER NOT NULL DEFAULT 1');
+    }
+
+    const savesColumns = this.db.prepare('PRAGMA table_info(saves)').all() as unknown as Array<{ name: string }>;
+    if (!savesColumns.some((column) => column.name === 'season_budget')) {
+      this.db.exec('ALTER TABLE saves ADD COLUMN season_budget INTEGER NOT NULL DEFAULT 30');
+      // 旧档统一沿用 30 点季节预算；中途季节的剩余行动点保持不变，继续按新成本规则结算。
+      this.db.exec("UPDATE saves SET season_budget = 30 WHERE season_budget IS NULL OR season_budget <= 0");
     }
   }
 

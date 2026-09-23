@@ -1,4 +1,5 @@
 import type { SampleMethod, Season, SiteId } from '@shanhai/contracts';
+import { SITE_NEIGHBORS } from '@shanhai/contracts';
 import { SPECIES_BY_ID, SITES_BY_ID } from './catalog.ts';
 import { createRng } from './rng.ts';
 import type {
@@ -625,13 +626,6 @@ export function round(value: number, digits = 0): number {
   const factorValue = 10 ** digits;
   return Math.round(value * factorValue) / factorValue;
 }
-
-const SITE_NEIGHBORS: Record<SiteId, SiteId[]> = {
-  foothill: ['mixed_forest', 'ridge'],
-  mixed_forest: ['foothill', 'stream_valley', 'ridge'],
-  stream_valley: ['mixed_forest', 'ridge'],
-  ridge: ['foothill', 'mixed_forest', 'stream_valley']
-};
 
 export function disperseSpecies(states: SpeciesState[], sites: SiteState[]): SpeciesState[] {
   const siteMap = new Map(sites.map((site) => [site.siteId, site]));

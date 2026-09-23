@@ -6,13 +6,19 @@ import type {
   JournalEntry,
   RecentEvent,
   SampleMethod,
+  ScoutIntel,
   Season,
   SeasonReview,
   SiteId,
   SpeciesSnapshot,
   WorldSnapshot
 } from '@shanhai/contracts';
-import { SEASON_LABELS } from '@shanhai/contracts';
+import {
+  exploreCost,
+  moveCost,
+  SEASON_ACTION_BUDGET,
+  SEASON_LABELS
+} from '@shanhai/contracts';
 import {
   applyOverwinter,
   applySampleEffects,
@@ -48,6 +54,7 @@ interface SaveRecord {
   day: number;
   slot: number;
   action_points: number;
+  season_budget: number;
   phase: GamePhase;
   current_site_id: SiteId;
   year_start_species_json: string;
@@ -176,10 +183,10 @@ export class GameService {
       this.store.db
         .prepare(
           `INSERT INTO saves (
-            id, session_id, seed, revision, year, season, day, slot, action_points, phase,
+            id, session_id, seed, revision, year, season, day, slot, action_points, season_budget, phase,
             current_site_id, year_start_species_json, year_start_sites_json,
             restoration_unlocked, created_at, updated_at
-          ) VALUES (?, ?, ?, 0, 1, 'spring', 1, 1, 30, 'active', 'foothill', '[]', '[]', 0, ?, ?)`
+          ) VALUES (?, ?, ?, 0, 1, 'spring', 1, 1, ${SEASON_ACTION_BUDGET}, ${SEASON_ACTION_BUDGET}, 'active', 'foothill', '[]', '[]', 0, ?, ?)`
         )
         .run(saveId, sessionId, seed, now, now);
 
@@ -526,6 +533,8 @@ export class GameService {
         return this.moveZone(save, command.siteId);
       case 'WAIT':
         return this.wait(save);
+      case 'EXPLORE_ZONE':
+        return this.exploreZone(save, command.siteId);
       case 'OBSERVE_PLANT':
         return this.observePlant(save, command.speciesId, command.values);
       case 'RECORD_ENVIRONMENT':
@@ -551,14 +560,17 @@ export class GameService {
     if (save.current_site_id === siteId) {
       throw new AppError('ACTION_NOT_ALLOWED', '你已经在该区域', 409);
     }
+    const cost = moveCost(save.current_site_id, siteId, save.season);
+    this.requireBudget(save, cost);
+    // 预算校验通过后再变更存档，保证预算不足时位置不被改写（事务也会整体回滚）。
     save.current_site_id = siteId;
-    this.consumeAction(save, 1);
+    this.consumeAction(save, cost);
     return {
       event: {
         type: 'MOVE_ZONE',
         message: `移动到${SITES_BY_ID.get(siteId)?.name}`,
-        effects: ['消耗 1 个行动点'],
-        payload: { siteId }
+        effects: [`消耗 ${cost} 个行动点`, ...this.budgetEffects(save)],
+        payload: { siteId, cost }
       }
     };
   }
@@ -570,10 +582,63 @@ export class GameService {
       event: {
         type: 'WAIT',
         message: '在原地等待，山林环境继续变化',
-        effects: ['消耗 1 个行动点'],
+        effects: ['消耗 1 个行动点', ...this.budgetEffects(save)],
         payload: {}
       }
     };
+  }
+
+  private exploreZone(save: SaveRecord, siteId: SiteId): CommandOutcome {
+    this.requireActive(save);
+    if (!SITES_BY_ID.has(siteId)) {
+      throw new AppError('INVALID_COMMAND', '目标区域不存在', 400);
+    }
+    if (save.current_site_id === siteId) {
+      throw new AppError('ACTION_NOT_ALLOWED', '已经身处该区域，可直接观察记录', 409);
+    }
+    const cost = exploreCost(save.current_site_id, siteId, save.season);
+    this.requireBudget(save, cost);
+
+    const targetSite = this.getSiteState(save.id, save.year, siteId);
+    if (!targetSite) {
+      throw new AppError('ACTION_NOT_ALLOWED', '目标区域环境状态缺失', 500);
+    }
+    const visible = this.getSpeciesStates(save.id, save.year)
+      .filter((state) => state.siteId === siteId && state.population > 1)
+      .sort((left, right) => right.population - left.population);
+    const highlights = visible.slice(0, 3).map((state) => SPECIES_BY_ID.get(state.speciesId)?.name ?? state.speciesId);
+
+    this.consumeAction(save, cost);
+
+    const intel: ScoutIntel = {
+      siteId,
+      siteName: SITES_BY_ID.get(siteId)?.name ?? siteId,
+      weather: targetSite.weather,
+      temperatureC: targetSite.temperatureC,
+      humidity: targetSite.humidity,
+      disturbance: round(targetSite.disturbance, 3),
+      visibleSpecies: visible.length,
+      highlights
+    };
+    const adjacent = moveCost(save.current_site_id, siteId, save.season) === 1 ? '相邻' : '跨区域';
+    return {
+      event: {
+        type: 'EXPLORE_ZONE',
+        message: `远途勘察${intel.siteName}（${adjacent}，未进入区域）`,
+        effects: [
+          `天气 ${weatherLabel(targetSite.weather)}，气温 ${targetSite.temperatureC.toFixed(1)}°C`,
+          `可见对象约 ${visible.length} 种${highlights.length > 0 ? `：${highlights.join('、')}` : ''}`,
+          `消耗 ${cost} 个行动点`,
+          ...this.budgetEffects(save)
+        ],
+        payload: { siteId, cost, intel }
+      },
+      evaluation: intel
+    };
+  }
+
+  private budgetEffects(save: SaveRecord): string[] {
+    return [`本季恢复预算剩余 ${save.action_points}/${save.season_budget}`];
   }
 
   private observePlant(
@@ -582,6 +647,7 @@ export class GameService {
     values: Extract<GameCommand, { type: 'OBSERVE_PLANT' }>['values']
   ): CommandOutcome {
     this.requireActive(save);
+    this.requireBudget(save, 1);
     const definition = SPECIES_BY_ID.get(speciesId);
     const state = this.getSpeciesState(save.id, save.year, save.current_site_id, speciesId);
     const site = this.getSiteState(save.id, save.year, save.current_site_id);
@@ -638,6 +704,7 @@ export class GameService {
     values: Extract<GameCommand, { type: 'RECORD_ENVIRONMENT' }>['values']
   ): CommandOutcome {
     this.requireActive(save);
+    this.requireBudget(save, 1);
     const site = this.getSiteState(save.id, save.year, save.current_site_id);
     if (!site) {
       throw new AppError('ACTION_NOT_ALLOWED', '当前区域环境状态缺失', 500);
@@ -683,6 +750,7 @@ export class GameService {
 
   private takeSample(save: SaveRecord, speciesId: string, method: SampleMethod): CommandOutcome {
     this.requireActive(save);
+    this.requireBudget(save, 1);
     const definition = SPECIES_BY_ID.get(speciesId);
     const state = this.getSpeciesState(save.id, save.year, save.current_site_id, speciesId);
     const site = this.getSiteState(save.id, save.year, save.current_site_id);
@@ -756,6 +824,7 @@ export class GameService {
     if (!save.restoration_unlocked) {
       throw new AppError('ACTION_NOT_ALLOWED', '生态修复需在年度报告揭示衰退后解锁', 409);
     }
+    this.requireBudget(save, 2);
     const definition = SPECIES_BY_ID.get(speciesId);
     const state = this.getSpeciesState(save.id, save.year, save.current_site_id, speciesId);
     const site = this.getSiteState(save.id, save.year, save.current_site_id);
@@ -764,9 +833,6 @@ export class GameService {
     }
     if (action === 'restore_wetland' && save.current_site_id !== 'stream_valley') {
       throw new AppError('ACTION_NOT_ALLOWED', '恢复湿生带只能在溪谷湿地执行', 409);
-    }
-    if (save.action_points < 2) {
-      throw new AppError('NO_ACTION_POINTS', '生态修复需要 2 个行动点', 409);
     }
 
     const profile = definition.zones[save.current_site_id]!;
@@ -801,7 +867,11 @@ export class GameService {
       throw new AppError('ACTION_NOT_ALLOWED', '至少观察到第 8 日才能结束当前季节', 409);
     }
     if (save.day === 10 && save.action_points > 0) {
-      throw new AppError('NO_ACTION_POINTS', '第 10 日必须完成全部行动后才能结算', 409);
+      throw new AppError(
+        'NO_ACTION_POINTS',
+        `第 10 日必须用完全部 ${save.season_budget} 点行动预算（可用移动、等待或探索消耗）后才能结算`,
+        409
+      );
     }
     const summary = this.closeSeason(save);
     return {
@@ -826,15 +896,16 @@ export class GameService {
     save.season = nextSeason(save.season);
     save.day = 1;
     save.slot = 1;
-    save.action_points = 30;
+    save.season_budget = SEASON_ACTION_BUDGET;
+    save.action_points = SEASON_ACTION_BUDGET;
     save.phase = 'active';
     this.regenerateEnvironments(save);
     return {
       event: {
         type: 'BEGIN_NEXT_SEASON',
         message: `进入${save.year} 年${SEASON_LABELS[save.season]}季`,
-        effects: ['季节环境已重新生成', '行动点恢复为 30'],
-        payload: { from: previous, to: save.season }
+        effects: ['季节环境已重新生成', `行动点恢复为 ${SEASON_ACTION_BUDGET}，移动、等待和跨区探索共用该预算`],
+        payload: { from: previous, to: save.season, budget: SEASON_ACTION_BUDGET }
       }
     };
   }
@@ -904,7 +975,8 @@ export class GameService {
     save.season = 'spring';
     save.day = 1;
     save.slot = 1;
-    save.action_points = 30;
+    save.season_budget = SEASON_ACTION_BUDGET;
+    save.action_points = SEASON_ACTION_BUDGET;
     save.phase = 'active';
     save.year_start_species_json = JSON.stringify(dispersedSpecies);
     save.year_start_sites_json = JSON.stringify(nextSites);
@@ -1203,6 +1275,8 @@ export class GameService {
       day: save.day,
       slot: save.slot,
       actionPoints: save.action_points,
+      actionBudget: save.season_budget,
+      actionBudgetSpent: Math.max(0, save.season_budget - save.action_points),
       phase: save.phase,
       currentSiteId: save.current_site_id,
       restorationUnlocked: Boolean(save.restoration_unlocked),
@@ -1264,13 +1338,34 @@ export class GameService {
     return publicSnapshot;
   }
 
-  private consumeAction(save: SaveRecord, cost: number): void {
+  private requireBudget(save: SaveRecord, cost: number): void {
     if (save.action_points < cost) {
-      throw new AppError('NO_ACTION_POINTS', `该操作需要 ${cost} 个行动点`, 409);
+      throw new AppError(
+        'NO_ACTION_POINTS',
+        `该操作需要 ${cost} 个行动点，本季恢复预算还剩 ${save.action_points}/${save.season_budget}`,
+        409,
+        { required: cost, remaining: save.action_points, budget: save.season_budget },
+        true
+      );
+    }
+  }
+
+  private consumeAction(save: SaveRecord, cost: number): void {
+    if (!Number.isInteger(cost) || cost <= 0) {
+      throw new Error(`非法行动点消耗：${cost}`);
+    }
+    if (save.action_points < cost) {
+      throw new AppError(
+        'NO_ACTION_POINTS',
+        `该操作需要 ${cost} 个行动点，本季恢复预算还剩 ${save.action_points}/${save.season_budget}`,
+        409,
+        { required: cost, remaining: save.action_points, budget: save.season_budget },
+        true
+      );
     }
     const previousDay = save.day;
     save.action_points -= cost;
-    const used = 30 - save.action_points;
+    const used = save.season_budget - save.action_points;
     if (save.action_points === 0) {
       save.day = 10;
       save.slot = 3;
@@ -1297,6 +1392,12 @@ export class GameService {
       throw new AppError('SAVE_NOT_FOUND', '未找到该观察档案', 404);
     }
 
+    // 旧档兼容：迁移补列后 season_budget 可能为默认值之外的异常值，统一校正到有效预算。
+    if (!Number.isInteger(row.season_budget) || row.season_budget <= 0) {
+      row.season_budget = SEASON_ACTION_BUDGET;
+      this.updateSave(row);
+    }
+
     if (parseJson<unknown[]>(row.year_start_species_json, []).length === 0) {
       const speciesStates = this.getSpeciesStates(row.id, row.year);
       const siteStates = this.getSiteStates(row.id, row.year);
@@ -1314,7 +1415,7 @@ export class GameService {
     this.store.db
       .prepare(
         `UPDATE saves SET
-          revision = ?, year = ?, season = ?, day = ?, slot = ?, action_points = ?, phase = ?,
+          revision = ?, year = ?, season = ?, day = ?, slot = ?, action_points = ?, season_budget = ?, phase = ?,
           current_site_id = ?, year_start_species_json = ?, year_start_sites_json = ?,
           restoration_unlocked = ?, updated_at = ?
          WHERE id = ?`
@@ -1326,6 +1427,7 @@ export class GameService {
         save.day,
         save.slot,
         save.action_points,
+        save.season_budget,
         save.phase,
         save.current_site_id,
         save.year_start_species_json,
@@ -1538,6 +1640,20 @@ function scoreEnvironment(
 
 function normalizeColor(value: string): string {
   return value.trim().toLowerCase().replaceAll(' ', '');
+}
+
+const WEATHER_LABELS: Record<string, string> = {
+  sunny: '晴',
+  cloudy: '多云',
+  overcast: '阴',
+  light_rain: '小雨',
+  heavy_rain: '大雨',
+  fog: '雾',
+  snow: '雪'
+};
+
+function weatherLabel(weather: string): string {
+  return WEATHER_LABELS[weather] ?? weather;
 }
 
 function parseJson<T>(value: string, fallback: T): T {

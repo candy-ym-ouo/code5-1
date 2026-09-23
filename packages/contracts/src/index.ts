@@ -50,6 +50,7 @@ const EnvironmentValuesSchema = z.object({
 export const CommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('MOVE_ZONE'), siteId: z.enum(SITE_IDS) }),
   z.object({ type: z.literal('WAIT') }),
+  z.object({ type: z.literal('EXPLORE_ZONE'), siteId: z.enum(SITE_IDS) }),
   z.object({ type: z.literal('OBSERVE_PLANT'), speciesId: z.string().min(1), values: ObservationValuesSchema }),
   z.object({ type: z.literal('RECORD_ENVIRONMENT'), values: EnvironmentValuesSchema }),
   z.object({ type: z.literal('TAKE_SAMPLE'), speciesId: z.string().min(1), method: z.enum(SAMPLE_METHODS) }),
@@ -190,6 +191,8 @@ export interface WorldSnapshot {
   day: number;
   slot: number;
   actionPoints: number;
+  actionBudget: number;
+  actionBudgetSpent: number;
   phase: GamePhase;
   currentSiteId: SiteId;
   restorationUnlocked: boolean;
@@ -232,3 +235,46 @@ export const SEASON_LABELS: Record<Season, string> = {
 };
 
 export const SLOT_LABELS = ['晨', '午', '暮'];
+
+/** 每季行动点恢复预算（所有移动、等待、跨区探索与现场操作共用）。 */
+export const SEASON_ACTION_BUDGET = 30;
+
+/** 区域间直接相邻关系（与 game-core 生态扩散邻接表一致）。 */
+export const SITE_NEIGHBORS: Record<SiteId, SiteId[]> = {
+  foothill: ['mixed_forest', 'ridge'],
+  mixed_forest: ['foothill', 'stream_valley', 'ridge'],
+  stream_valley: ['mixed_forest', 'ridge'],
+  ridge: ['foothill', 'mixed_forest', 'stream_valley']
+};
+
+export function areSitesAdjacent(left: SiteId, right: SiteId): boolean {
+  return left !== right && SITE_NEIGHBORS[left].includes(right);
+}
+
+/**
+ * 移动到目标区域的行动点成本。
+ * 相邻区域 1 点；跨区域（不相邻）2 点；冬季穿越山脊额外加收 1 点。
+ */
+export function moveCost(from: SiteId, to: SiteId, season: Season): number {
+  if (from === to) return 0;
+  const base = areSitesAdjacent(from, to) ? 1 : 2;
+  const ridgeSurcharge = season === 'winter' && (from === 'ridge' || to === 'ridge') ? 1 : 0;
+  return base + ridgeSurcharge;
+}
+
+/** 跨区探索（前往目标区域外围勘察）的行动点成本，在移动成本基础上加 1 点。 */
+export function exploreCost(from: SiteId, to: SiteId, season: Season): number {
+  if (from === to) return 0;
+  return moveCost(from, to, season) + 1;
+}
+
+export interface ScoutIntel {
+  siteId: SiteId;
+  siteName: string;
+  weather: string;
+  temperatureC: number;
+  humidity: number;
+  disturbance: number;
+  visibleSpecies: number;
+  highlights: string[];
+}

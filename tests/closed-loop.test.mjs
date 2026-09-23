@@ -63,6 +63,15 @@ try {
   });
   await send({ type: 'TAKE_SAMPLE', speciesId: 'prunus-davidiana', method: 'litter' });
 
+  // 跨区探索（勘察不相邻的溪谷湿地，移动 2 + 勘察 1 = 3 AP），预算共享且位置不变
+  const beforeExplore = world.actionPoints;
+  await send({ type: 'EXPLORE_ZONE', siteId: 'stream_valley' });
+  assert.equal(world.actionPoints, beforeExplore - 3);
+  assert.equal(world.currentSiteId, 'foothill');
+  assert.equal(world.recentEvents[0].type, 'EXPLORE_ZONE');
+  assert.equal(world.actionBudget, 30);
+  assert.equal(world.actionBudgetSpent, 30 - world.actionPoints);
+
   for (const expectedSeason of ['spring', 'summer', 'autumn', 'winter']) {
     assert.equal(world.season, expectedSeason);
     while (world.day < 8) {

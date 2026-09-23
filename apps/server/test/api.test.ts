@@ -171,3 +171,185 @@ async function advanceToDayEight(
   }
   return world;
 }
+
+describe('shared seasonal action budget', () => {
+  let app: ReturnType<typeof createApp>['app'];
+  let store: ReturnType<typeof createApp>['store'];
+
+  beforeAll(() => {
+    const created = createApp({ databasePath: ':memory:', loggerEnabled: false });
+    app = created.app;
+    store = created.store;
+  });
+
+  afterAll(() => store.close());
+
+  const newAgent = () => request.agent(app);
+
+  it('charges one shared pool for move, wait and cross-zone exploration', async () => {
+    const agent = newAgent();
+    const createResponse = await agent.post('/api/save').expect(201);
+    let world = createResponse.body as WorldSnapshot;
+    expect(world.actionPoints).toBe(30);
+    expect(world.actionBudget).toBe(30);
+    expect(world.actionBudgetSpent).toBe(0);
+
+    // 山麓 -> 针阔混交林（相邻）：1 AP
+    world = await command(agent, world, { type: 'MOVE_ZONE', siteId: 'mixed_forest' });
+    expect(world.actionPoints).toBe(29);
+    expect(world.actionBudgetSpent).toBe(1);
+    expect(world.currentSiteId).toBe('mixed_forest');
+
+    // 勘察不相邻的山麓林缘：moveCost 1（混交林与山麓相邻）+1 = 2 AP，且不移动位置
+    world = await command(agent, world, { type: 'EXPLORE_ZONE', siteId: 'foothill' });
+    expect(world.actionPoints).toBe(27);
+    expect(world.actionBudgetSpent).toBe(3);
+    expect(world.currentSiteId).toBe('mixed_forest');
+    expect(world.recentEvents[0]?.type).toBe('EXPLORE_ZONE');
+    expect(world.recentEvents[0]?.effects.some((effect: string) => effect.includes('可见对象'))).toBe(true);
+
+    // 跨区域移动 混交林 -> 溪谷湿地（相邻）：1 AP；再 溪谷 -> 山麓（不相邻）：2 AP
+    world = await command(agent, world, { type: 'MOVE_ZONE', siteId: 'stream_valley' });
+    expect(world.actionPoints).toBe(26);
+    world = await command(agent, world, { type: 'MOVE_ZONE', siteId: 'foothill' });
+    expect(world.actionPoints).toBe(24);
+    expect(world.actionBudgetSpent).toBe(6);
+  });
+
+  it('refuses to scout the current zone without spending any budget', async () => {
+    const agent = newAgent();
+    const createResponse = await agent.post('/api/save').expect(201);
+    const world = createResponse.body as WorldSnapshot;
+    const beforeRevision = world.revision;
+
+    const response = await agent
+      .post(`/api/save/${world.saveId}/commands`)
+      .send({
+        expectedRevision: world.revision,
+        idempotencyKey: `explore-self-${Math.random().toString(16).slice(2)}`,
+        command: { type: 'EXPLORE_ZONE', siteId: 'foothill' }
+      })
+      .expect(409);
+    expect(response.body.code).toBe('ACTION_NOT_ALLOWED');
+
+    const refreshed = await agent.get(`/api/save/${world.saveId}/world`).expect(200);
+    expect(refreshed.body.actionPoints).toBe(30);
+    expect(refreshed.body.revision).toBe(beforeRevision);
+    expect(refreshed.body.currentSiteId).toBe('foothill');
+  });
+
+  it('rolls back without double-deduction when a command fails after validation', async () => {
+    const agent = newAgent();
+    const createResponse = await agent.post('/api/save').expect(201);
+    const world = createResponse.body as WorldSnapshot;
+
+    // 移动到不存在的区域：400，预算与版本不变
+    const invalid = await agent
+      .post(`/api/save/${world.saveId}/commands`)
+      .send({
+        expectedRevision: world.revision,
+        idempotencyKey: 'invalid-move-zone-001',
+        command: { type: 'MOVE_ZONE', siteId: 'foothill' }
+      })
+      .expect(409);
+    expect(invalid.body.code).toBe('ACTION_NOT_ALLOWED');
+    const afterInvalid = await agent.get(`/api/save/${world.saveId}/world`).expect(200);
+    expect(afterInvalid.body.actionPoints).toBe(30);
+
+    // 耗尽预算后再等待：失败必须回滚，不能出现负数或重扣
+    let drained = world;
+    for (let index = 0; index < 30; index += 1) {
+      drained = await command(agent, drained, { type: 'WAIT' });
+    }
+    expect(drained.actionPoints).toBe(0);
+    expect(drained.day).toBe(10);
+    const overBudget = await agent
+      .post(`/api/save/${drained.saveId}/commands`)
+      .send({
+        expectedRevision: drained.revision,
+        idempotencyKey: 'wait-after-budget-001',
+        command: { type: 'WAIT' }
+      })
+      .expect(409);
+    expect(overBudget.body.code).toBe('NO_ACTION_POINTS');
+    expect(overBudget.body.details.remaining).toBe(0);
+    const afterFailure = await agent.get(`/api/save/${drained.saveId}/world`).expect(200);
+    expect(afterFailure.body.actionPoints).toBe(0);
+    expect(afterFailure.body.revision).toBe(drained.revision);
+  });
+
+  it('resolves concurrent commands with optimistic revision conflicts, charging the budget only once', async () => {
+    const agent = newAgent();
+    const createResponse = await agent.post('/api/save').expect(201);
+    const world = createResponse.body as WorldSnapshot;
+    const idempotencyKey = `concurrent-${Math.random().toString(16).slice(2)}`;
+
+    const [first, second] = await Promise.all([
+      agent
+        .post(`/api/save/${world.saveId}/commands`)
+        .send({ expectedRevision: world.revision, idempotencyKey: `${idempotencyKey}-a`, command: { type: 'WAIT' } }),
+      agent
+        .post(`/api/save/${world.saveId}/commands`)
+        .send({ expectedRevision: world.revision, idempotencyKey: `${idempotencyKey}-b`, command: { type: 'WAIT' } })
+    ]);
+
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    const conflict = first.status === 409 ? first : second;
+    expect(conflict.body.code).toBe('REVISION_CONFLICT');
+
+    const refreshed = await agent.get(`/api/save/${world.saveId}/world`).expect(200);
+    expect(refreshed.body.revision).toBe(world.revision + 1);
+    expect(refreshed.body.actionPoints).toBe(29);
+    expect(refreshed.body.actionBudgetSpent).toBe(1);
+  });
+
+  it('replays an idempotent retry without deducting the budget twice', async () => {
+    const agent = newAgent();
+    const createResponse = await agent.post('/api/save').expect(201);
+    const world = createResponse.body as WorldSnapshot;
+    const body = {
+      expectedRevision: world.revision,
+      idempotencyKey: 'idempotent-explore-001',
+      command: { type: 'EXPLORE_ZONE', siteId: 'mixed_forest' } as const
+    };
+    const first = await agent.post(`/api/save/${world.saveId}/commands`).send(body).expect(200);
+    const second = await agent.post(`/api/save/${world.saveId}/commands`).send(body).expect(200);
+    expect(first.body.event.id).toBe(second.body.event.id);
+    expect(second.body.world.actionPoints).toBe(28);
+    expect(second.body.world.revision).toBe(first.body.world.revision);
+  });
+
+  it('applies the winter ridge surcharge to move and exploration costs', async () => {
+    const agent = newAgent();
+    const createResponse = await agent.post('/api/save').expect(201);
+    let world = createResponse.body as WorldSnapshot;
+    for (const season of ['spring', 'summer', 'autumn'] as const) {
+      world = await advanceToDayEight(agent, world);
+      world = await command(agent, world, { type: 'END_SEASON' });
+      world = await command(agent, world, { type: 'BEGIN_NEXT_SEASON' });
+      expect(world.actionPoints).toBe(30);
+      expect(world.actionBudget).toBe(30);
+    }
+    world = await advanceToDayEight(agent, world);
+    world = await command(agent, world, { type: 'END_SEASON' });
+    world = await command(agent, world, { type: 'BEGIN_NEXT_YEAR' });
+    expect(world.season).toBe('spring');
+
+    // 直接把存档推进到冬季，验证山脊冬季加价
+    store.db
+      .prepare("UPDATE saves SET season = 'winter', action_points = 30, season_budget = 30, day = 1, slot = 1, phase = 'active' WHERE id = ?")
+      .run(world.saveId);
+    let winter = (await agent.get(`/api/save/${world.saveId}/world`).expect(200)).body as WorldSnapshot;
+    expect(winter.currentSiteId).toBe('foothill');
+
+    // 山麓 -> 山脊：冬季 +1，共 2 AP
+    winter = await command(agent, winter, { type: 'MOVE_ZONE', siteId: 'ridge' });
+    expect(winter.actionPoints).toBe(28);
+
+    // 在山脊勘察溪谷（相邻，move 冬季 2 AP）：探索共 3 AP
+    winter = await command(agent, winter, { type: 'EXPLORE_ZONE', siteId: 'stream_valley' });
+    expect(winter.actionPoints).toBe(25);
+    expect(winter.currentSiteId).toBe('ridge');
+  });
+});

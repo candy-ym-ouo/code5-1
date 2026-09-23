@@ -31,7 +31,7 @@ export function GameShell() {
         <div className="hud-compact" aria-label="游戏时间">
           <span>{world.day} 日</span>
           <span>{SLOT_LABELS[world.slot - 1] ?? '暮'}</span>
-          <strong>{world.actionPoints} AP</strong>
+          <strong>{world.actionPoints}/{world.actionBudget} AP</strong>
         </div>
       </header>
       {(notice || error) && (
